@@ -39,8 +39,9 @@ services:
       # Optional JVM tunables
       JAVA_OPTS: -XX:+UseContainerSupport -XX:MaxRAMPercentage=75
       SPRING_FLYWAY_ENABLED: "true"          # <= включаем Flyway
-      SPRING_FLYWAY_SCHEMAS: "public,catalogue"
+      SPRING_FLYWAY_DEFAULT_SCHEMA: "catalogue"   # или "catalogue"
       SPRING_JPA_HIBERNATE_DDL_AUTO: "validate"
+      SPRING_FLYWAY_TABLE: "flyway_schema_history"
       # Server port (matches EXPOSE)
       SERVER_PORT: 8081
     ports:
