@@ -8,7 +8,7 @@ spring:
     schemas:
       - public
       - catalogue
-    enabled: false
+    enabled: true
   jpa:
     show-sql: true
     hibernate:

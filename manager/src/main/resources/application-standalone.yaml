@@ -1,4 +1,4 @@
 selmag:
-  services:
+  service:
     catalogue:
       uri: http://localhost:8081
