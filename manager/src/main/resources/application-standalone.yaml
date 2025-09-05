@@ -13,7 +13,7 @@ spring:
       client:
         provider:
           keycloak:
-            issuer-uri: http://keycloak:8080/realms/selmag
+#            issuer-uri: http://keycloak:8080/realms/selmag
             user-name-attribute: preferred_username
         registration:
           keycloak:

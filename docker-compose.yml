@@ -19,25 +19,28 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:25.0
+    container_name: shop-it-2-keycloak-1
     environment:
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
-      #      KC_HOSTNAME_URL: http://keycloak:8080
-      #      KC_HOSTNAME_ADMIN_URL: http://localhost:8082
+
+      # ЕДИНЫЙ публичный адрес (и для браузера, и для контейнеров):
+      KC_HOSTNAME_URL: http://host.docker.internal:8082
+      # В dev-режиме держим strict=FALSE (strict иногда ломает старт при нестандартном hostname):
       KC_HOSTNAME_STRICT: "false"
-      KC_FEATURES: hostname:v1
     volumes:
       - ./config/keycloak/import:/opt/keycloak/data/import:ro
     command: start-dev --import-realm --health-enabled=true
     ports:
       - "8082:8080"
     healthcheck:
+      # Простой TCP-check: контейнер здоров, когда порт слушает
       test: [ "CMD-SHELL", "bash -lc ': </dev/tcp/127.0.0.1/8080'" ]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-    # Keycloak dev режим не требует Postgres; можно без depends_on
+      interval: 3s
+      timeout: 3s
+      retries: 80
+      start_period: 40s
+    # На Docker Desktop для Windows host.docker.internal уже доступен — extra_hosts не требуется
     restart: unless-stopped
 
   back:
@@ -46,20 +49,18 @@ services:
       dockerfile: back-end/Dockerfile
     container_name: shopit-back
     environment:
-      # override localhost -> postgres (compose service name)
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-catalogue}
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-admin}
-      # ВКЛЮЧИТЬ FLYWAY:
+
+      # Flyway + строгая схема:
       SPRING_FLYWAY_ENABLED: "true"
       SPRING_FLYWAY_SCHEMAS: "public,catalogue"
-      # Чтобы JPA не «лепила» свои таблицы и падала, если схема не соответствует:
       SPRING_JPA_HIBERNATE_DDL_AUTO: "validate"
-      # ресурсо-сервер (JWT) указывает на keycloak в сети compose
-      # (опционально, вместо issuer можно явно)
-      # SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/selmag/protocol/openid-connect/certs
-      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/selmag
-      # профили/порт/JVM
+
+      # Ресурс-сервер доверяет issuer (Spring сам найдёт JWK из discovery):
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://host.docker.internal:8082/realms/selmag
+
       SPRING_PROFILES_ACTIVE: standalone
       SERVER_PORT: "8081"
       JAVA_OPTS: -XX:+UseContainerSupport -XX:MaxRAMPercentage=75
@@ -78,15 +79,23 @@ services:
       dockerfile: manager/Dockerfile
     container_name: shopit-manager
     environment:
-      # главный фикс: manager должен ходить к back по имени сервиса в сети compose
+      # Куда ходить к back изнутри сети Docker:
       SELMAG_SERVICE_CATALOGUE_URI: http://back:8081
-      # OAuth2 client -> Keycloak в сети compose
-      SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_ISSUER_URI: http://keycloak:8080/realms/selmag
+
+      # Клиент для Keycloak:
       SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_ID: manager-app
-      # можешь переопределить секрет через .env: KC_MANAGER_SECRET=...
       SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_SECRET: ${KC_MANAGER_SECRET:-JwByKV4Y8m95GDYTNqJH6jfaj5dXpv8F}
-      SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_AUTHORIZATION_URI: http://localhost:8082/realms/selmag/protocol/openid-connect/auth
       SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_AUTHORIZATION_GRANT_TYPE: authorization_code
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_AUTHENTICATION_METHOD: client_secret_basic
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_REDIRECT_URI: http://localhost:8080/login/oauth2/code/keycloak
+
+      # ВАЖНО: только issuer-uri (без ручных auth/token/jwk URI — Spring сам подтянет из discovery)
+      SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_ISSUER_URI: http://host.docker.internal:8082/realms/selmag
+
+      # Логи безопасности
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY: DEBUG
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY_OAUTH2_CLIENT: DEBUG
+
       SPRING_PROFILES_ACTIVE: standalone
       SERVER_PORT: "8080"
       SPRING_APPLICATION_JSON: '{"selmag":{"service":{"catalogue":{"uri":"http://back:8081"}}}}'
