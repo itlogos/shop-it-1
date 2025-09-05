@@ -1,21 +1,43 @@
-
 services:
   postgres:
     image: postgres:16-alpine
     container_name: shopit-postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-catalogue}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
     ports:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-catalogue}"]
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HOSTNAME_URL: http://keycloak:8080
+      KC_HOSTNAME_ADMIN_URL: http://localhost:8082
+      KC_HOSTNAME_STRICT: "false"
+      KC_FEATURES: hostname:v1
+    volumes:
+      - ./config/keycloak/import:/opt/keycloak/data/import:ro
+    command: start-dev --import-realm --health-enabled=true
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc ': </dev/tcp/127.0.0.1/8080'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    # Keycloak dev режим не требует Postgres; можно без depends_on
     restart: unless-stopped
 
   back:
@@ -23,29 +45,24 @@ services:
       context: .
       dockerfile: back-end/Dockerfile
     container_name: shopit-back
-    depends_on:
-      postgres:
-        condition: service_healthy # <= было service_started
     environment:
-      # Activate the profile that project provides
+      # override localhost -> postgres (compose service name)
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-catalogue}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      # ресурсо-сервер (JWT) указывает на keycloak в сети compose
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/selmag
+      # профили/порт/JVM
       SPRING_PROFILES_ACTIVE: standalone
-
-      # Override datasource to use Docker network hostnames
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
-      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
-      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
-
-      # Optional JVM tunables
+      SERVER_PORT: "8081"
       JAVA_OPTS: -XX:+UseContainerSupport -XX:MaxRAMPercentage=75
-      SPRING_FLYWAY_ENABLED: "true"
-      SPRING_FLYWAY_CREATE_SCHEMAS: "true"          # <= включаем Flyway
-      SPRING_FLYWAY_DEFAULT_SCHEMA: "catalogue"   # или "catalogue"
-      SPRING_JPA_HIBERNATE_DDL_AUTO: "validate"
-      SPRING_FLYWAY_TABLE: "flyway_schema_history"
-      # Server port (matches EXPOSE)
-      SERVER_PORT: 8081
     ports:
       - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
     restart: unless-stopped
 
   manager:
@@ -53,17 +70,25 @@ services:
       context: .
       dockerfile: manager/Dockerfile
     container_name: shopit-manager
-    depends_on:
-      - back
     environment:
-      SPRING_PROFILES_ACTIVE: standalone
-      # Point manager to the back-end service via Docker DNS
+      # главный фикс: manager должен ходить к back по имени сервиса в сети compose
       SELMAG_SERVICE_CATALOGUE_URI: http://back:8081
-      #SPRING_APPLICATION_JSON: '{"selmag":{"service":{"catalogue":{"uri":"http://back:8081"}}}}'
+      # OAuth2 client -> Keycloak в сети compose
+      SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_ISSUER_URI: http://keycloak:8080/realms/selmag
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_ID: manager-app
+      # можешь переопределить секрет через .env: KC_MANAGER_SECRET=...
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_SECRET: ${KC_MANAGER_SECRET:-JwByKV4Y8m95GDYTNqJH6jfaj5dXpv8F}
+      SPRING_PROFILES_ACTIVE: standalone
+      SERVER_PORT: "8080"
+      SPRING_APPLICATION_JSON: '{"selmag":{"service":{"catalogue":{"uri":"http://back:8081"}}}}'
       JAVA_OPTS: -XX:+UseContainerSupport -XX:MaxRAMPercentage=75
-      SERVER_PORT: 8080
     ports:
       - "8080:8080"
+    depends_on:
+      back:
+        condition: service_started
+      keycloak:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
