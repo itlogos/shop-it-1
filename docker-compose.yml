@@ -19,7 +19,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:25.0
-    container_name: shop-it-2-keycloak-1
+    container_name: shop-it-2-keycloak
     environment:
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
