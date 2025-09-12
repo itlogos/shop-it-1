@@ -1,35 +1,19 @@
-# ---------- Build stage ----------
+# syntax=docker/dockerfile:1
+
 FROM maven:3.9.9-eclipse-temurin-21 AS build
-WORKDIR /app
+WORKDIR /build
 
-# Copy Maven descriptor files first to leverage Docker layer caching
-COPY pom.xml ./
-COPY manager/pom.xml manager/pom.xml
-COPY back-end/pom.xml back-end/pom.xml
+# Родительский pom (если есть) и модуль manager
+COPY ./pom.xml ./pom.xml
+COPY ./manager/pom.xml ./manager/pom.xml
+COPY ./manager/src ./manager/src
 
-# Pre-fetch dependencies
-RUN mvn -q -DskipTests dependency:go-offline
+# Скачиваем зависимости и собираем
+RUN mvn -q -f manager/pom.xml -DskipTests dependency:go-offline
+RUN mvn -q -f manager/pom.xml -DskipTests package
 
-# Copy sources
-COPY manager/src manager/src
-
-# Build only the manager module
-RUN mvn -q -pl manager -am -DskipTests package
-
-# ---------- Runtime stage ----------
 FROM eclipse-temurin:21-jre
 WORKDIR /app
-
-# Copy the built fat JAR
-COPY --from=build /app/manager/target/manager-*.jar app.jar
-
-# Default profile loads application-standalone.yaml in this project
-ENV SPRING_PROFILES_ACTIVE=standalone
-
-# Let Spring Boot know the port (can be overridden)
-ENV SERVER_PORT=8080
-
-# Expose the HTTP port
+COPY --from=build /build/manager/target/*.jar /app/app.jar
 EXPOSE 8080
-
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]
+ENTRYPOINT ["java","-jar","/app/app.jar"]

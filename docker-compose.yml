@@ -1,3 +1,4 @@
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -11,7 +12,7 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-catalogue}" ]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-catalogue}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -23,90 +24,102 @@ services:
     environment:
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
-
-      # ЕДИНЫЙ публичный адрес (и для браузера, и для контейнеров):
-      KC_HOSTNAME_URL: http://host.docker.internal:8082
-      # В dev-режиме держим strict=FALSE (strict иногда ломает старт при нестандартном hostname):
       KC_HOSTNAME_STRICT: "false"
+    command: ["start-dev", "--import-realm"]
     volumes:
-      - ./config/keycloak/import:/opt/keycloak/data/import:ro
-    command: start-dev --import-realm --health-enabled=true
+      - ./config/keycloak/import:/opt/keycloak/data/import
     ports:
       - "8082:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Без curl: проверяем порт и ждём 200 OK на discovery
     healthcheck:
-      # Простой TCP-check: контейнер здоров, когда порт слушает
-      test: [ "CMD-SHELL", "bash -lc ': </dev/tcp/127.0.0.1/8080'" ]
-      interval: 3s
-      timeout: 3s
-      retries: 80
-      start_period: 40s
-    # На Docker Desktop для Windows host.docker.internal уже доступен — extra_hosts не требуется
+      test: [ "CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /realms/selmag/.well-known/openid-configuration HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 && (timeout 2s cat <&3 | grep -q '200 OK')" ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
     restart: unless-stopped
 
   back:
-    build:
-      context: .
-      dockerfile: back-end/Dockerfile
+    image: shop-it-2-back
     container_name: shopit-back
+    build:
+      context: ./back
+      dockerfile: Dockerfile
     environment:
+      SPRING_PROFILES_ACTIVE: standalone
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-catalogue}
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-admin}
-
-      # Flyway + строгая схема:
-      SPRING_FLYWAY_ENABLED: "true"
-      SPRING_FLYWAY_SCHEMAS: "public,catalogue"
-      SPRING_JPA_HIBERNATE_DDL_AUTO: "validate"
-
-      # Ресурс-сервер доверяет issuer (Spring сам найдёт JWK из discovery):
-      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://host.docker.internal:8082/realms/selmag
-
-      SPRING_PROFILES_ACTIVE: standalone
-      SERVER_PORT: "8081"
-      JAVA_OPTS: -XX:+UseContainerSupport -XX:MaxRAMPercentage=75
-    ports:
-      - "8081:8081"
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/selmag
+      # На всякий случай фиксируем порт (по умолчанию 8080)
+      SERVER_PORT: 8080
     depends_on:
       postgres:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+    # Healthcheck без curl/wget (если actuator включён и открыт)
+    healthcheck:
+      test: [ "CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /actuator/health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 && (timeout 2s cat <&3 | grep -q '\"status\":\"UP\"')" ]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
     restart: unless-stopped
 
   manager:
+    image: shop-it-2-manager
+    container_name: shopit-manager
     build:
       context: .
       dockerfile: manager/Dockerfile
-    container_name: shopit-manager
     environment:
-      # Куда ходить к back изнутри сети Docker:
-      SELMAG_SERVICE_CATALOGUE_URI: http://back:8081
-
-      # Клиент для Keycloak:
-      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_ID: manager-app
-      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_SECRET: ${KC_MANAGER_SECRET:-JwByKV4Y8m95GDYTNqJH6jfaj5dXpv8F}
-      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_AUTHORIZATION_GRANT_TYPE: authorization_code
-      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_CLIENT_AUTHENTICATION_METHOD: client_secret_basic
-      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_KEYCLOAK_REDIRECT_URI: http://localhost:8080/login/oauth2/code/keycloak
-
-      # ВАЖНО: только issuer-uri (без ручных auth/token/jwk URI — Spring сам подтянет из discovery)
-      SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_ISSUER_URI: http://host.docker.internal:8082/realms/selmag
-
-      # Логи безопасности
-      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY: DEBUG
-      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY_OAUTH2_CLIENT: DEBUG
-
       SPRING_PROFILES_ACTIVE: standalone
-      SERVER_PORT: "8080"
-      SPRING_APPLICATION_JSON: '{"selmag":{"service":{"catalogue":{"uri":"http://back:8081"}}}}'
-      JAVA_OPTS: -XX:+UseContainerSupport -XX:MaxRAMPercentage=75
-    ports:
-      - "8080:8080"
+
+      # OAuth2 Client: discovery для Keycloak 25
+      SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_ISSUER_URI: http://keycloak:8080/realms/selmag
+
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_MANAGER_APP_PROVIDER: keycloak
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_MANAGER_APP_CLIENT_ID: ${MANAGER_CLIENT_ID:-manager-app}
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_MANAGER_LOGIN_CLIENT_SECRET: ${MANAGER_LOGIN_CLIENT_SECRET:-JwByKV4Y8m95GDYTNqJH6jfaj5dXpv8F}
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_MANAGER_APP_AUTHORIZATION_GRANT_TYPE: client_credentials
+
+      # Если manager сам валидирует входящие JWT
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/selmag
+
+      # Адресы внутрених сервисов
+      APP_CATALOGUE_BASE_URL: http://back:8080
+      SERVER_PORT: 8080
     depends_on:
+      # back сейчас у тебя падает (Exit/Error), поэтому НЕ ждём его healthy,
+      # достаточно чтобы он «запустился». Иначе manager будет вечно «Created».
       back:
         condition: service_started
       keycloak:
         condition: service_healthy
+#    healthcheck:
+#      test: [ "CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /actuator/health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 && (timeout 2s cat <&3 | grep -q '\"status\":\"UP\"')" ]
+#      interval: 5s
+#      timeout: 5s
+#      retries: 60
+#      start_period: 20s
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: shopit-nginx
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro   # было: ./nginx/app.conf:/etc/nginx/conf.d/app.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      manager:
+        condition: service_started
     restart: unless-stopped
 
 volumes:

@@ -1,16 +1,6 @@
-# IDE & VCS
-.git
-.idea
-.vscode
-
-# OS
-.DS_Store
-
-# Build artifacts
 **/target
-**/build
-**/out
-
-# Node/Frontend (if any future modules)
-node_modules
-dist
+**/.git
+**/.idea
+**/.vscode
+**/.mvn
+**/.DS_Store
